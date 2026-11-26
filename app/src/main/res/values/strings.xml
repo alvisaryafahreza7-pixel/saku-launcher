@@ -4,4 +4,6 @@
     <string name="search_hint">Cari aplikasi</string>
     <string name="settings_label">Atur</string>
     <string name="quick_label">Pintasan cepat</string>
+    <string name="swipe_hint">Geser naik untuk semua aplikasi</string>
+    <string name="close_label">Tutup</string>
 </resources>
