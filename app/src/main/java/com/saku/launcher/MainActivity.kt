@@ -2,6 +2,7 @@ package com.saku.launcher
 
 import android.app.Activity
 import android.app.AlarmManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -14,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -69,7 +71,14 @@ class MainActivity : Activity() {
     private var secondary = Color.parseColor("#66D9E8")
     private var drawerOpen = false
     private var introDone = false
+    private var powerReceiverRegistered = false
     private val handler = Handler(Looper.getMainLooper())
+
+    private val powerSaveReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            ambient.onHostResume(isPowerSaveMode())
+        }
+    }
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -226,6 +235,11 @@ class MainActivity : Activity() {
         super.onResume()
         handler.removeCallbacks(ticker)
         ticker.run()
+        ambient.onHostResume(isPowerSaveMode())
+        if (!powerReceiverRegistered) {
+            registerReceiver(powerSaveReceiver, IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED))
+            powerReceiverRegistered = true
+        }
         if (!introDone) {
             introDone = true
             playIntro()
@@ -235,6 +249,11 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(ticker)
+        ambient.onHostPause()
+        if (powerReceiverRegistered) {
+            unregisterReceiver(powerSaveReceiver)
+            powerReceiverRegistered = false
+        }
     }
 
     @Deprecated("Home launcher menangani tombol back sendiri")
@@ -260,6 +279,7 @@ class MainActivity : Activity() {
     private fun openDrawer() {
         if (drawerOpen) return
         drawerOpen = true
+        ambient.onHostPause()
         drawerAdapter.submit(allApps)
         drawerSearch.text.clear()
 
@@ -299,6 +319,7 @@ class MainActivity : Activity() {
     private fun closeDrawer() {
         if (!drawerOpen) return
         drawerOpen = false
+        ambient.onHostResume(isPowerSaveMode())
         hideKeyboard()
 
         if (!animationsEnabled()) {
@@ -472,6 +493,9 @@ class MainActivity : Activity() {
 
     private fun animationsEnabled(): Boolean =
         Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+
+    private fun isPowerSaveMode(): Boolean =
+        (getSystemService(POWER_SERVICE) as PowerManager).isPowerSaveMode
 
     private fun rounded(fill: Int, stroke: Int, radius: Int): GradientDrawable =
         GradientDrawable().apply {
