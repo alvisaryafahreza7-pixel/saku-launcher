@@ -1,25 +1,35 @@
 package com.saku.launcher
 
 import android.app.Activity
-import android.app.AlertDialog
+import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
+import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.GridView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -33,19 +43,37 @@ class MainActivity : Activity() {
 
     private data class AppInfo(val label: String, val packageName: String, val icon: Drawable)
 
+    private lateinit var root: FrameLayout
+    private lateinit var ambient: AmbientBackgroundView
+    private lateinit var homeLayer: LinearLayout
+    private lateinit var glanceCard: LinearLayout
     private lateinit var clock: TextView
     private lateinit var dateText: TextView
-    private lateinit var search: EditText
-    private lateinit var grid: GridView
+    private lateinit var batteryChip: TextView
+    private lateinit var alarmChip: TextView
+    private lateinit var searchPill: TextView
+    private lateinit var homeGrid: GridView
+    private lateinit var dragHandle: TextView
     private lateinit var dock: LinearLayout
-    private lateinit var adapter: AppAdapter
+    private lateinit var drawerLayer: FrameLayout
+    private lateinit var drawerInner: LinearLayout
+    private lateinit var drawerSearch: EditText
+    private lateinit var closeDrawerBtn: Button
+    private lateinit var drawerGrid: GridView
+
+    private lateinit var homeAdapter: AppAdapter
+    private lateinit var drawerAdapter: AppAdapter
 
     private var allApps: List<AppInfo> = emptyList()
+    private var accent = Color.parseColor("#FFC857")
+    private var secondary = Color.parseColor("#66D9E8")
+    private var drawerOpen = false
+    private var introDone = false
     private val handler = Handler(Looper.getMainLooper())
 
     private val ticker = object : Runnable {
         override fun run() {
-            updateTime()
+            updateGlance()
             handler.postDelayed(this, 15_000)
         }
     }
@@ -54,39 +82,154 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        bindViews()
+        setupEdgeToEdge()
+        applyWindowInsets()
+        resolvePalette()
+        styleSurfaces()
+        loadAppLists()
+        setupInteractions()
+        buildDock()
+    }
+
+    private fun bindViews() {
+        root = findViewById(R.id.root)
+        ambient = findViewById(R.id.ambient)
+        homeLayer = findViewById(R.id.homeLayer)
+        glanceCard = findViewById(R.id.glanceCard)
         clock = findViewById(R.id.clock)
         dateText = findViewById(R.id.dateText)
-        search = findViewById(R.id.search)
-        grid = findViewById(R.id.grid)
+        batteryChip = findViewById(R.id.batteryChip)
+        alarmChip = findViewById(R.id.alarmChip)
+        searchPill = findViewById(R.id.searchPill)
+        homeGrid = findViewById(R.id.homeGrid)
+        dragHandle = findViewById(R.id.dragHandle)
         dock = findViewById(R.id.dock)
+        drawerLayer = findViewById(R.id.drawerLayer)
+        drawerInner = findViewById(R.id.drawerInner)
+        drawerSearch = findViewById(R.id.drawerSearch)
+        closeDrawerBtn = findViewById(R.id.closeDrawer)
+        drawerGrid = findViewById(R.id.drawerGrid)
+    }
 
+    private fun setupEdgeToEdge() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility =
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        }
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+    }
+
+    private fun applyWindowInsets() {
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            val left = insets.systemWindowInsetLeft
+            val top = insets.systemWindowInsetTop + dp(8)
+            val right = insets.systemWindowInsetRight
+            val bottom = insets.systemWindowInsetBottom + dp(8)
+            homeLayer.setPadding(left, top, right, bottom)
+            drawerInner.setPadding(left, top, right, bottom)
+            insets.consumeSystemWindowInsets()
+        }
+    }
+
+    private fun resolvePalette() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            accent = getColor(android.R.color.system_accent1_500)
+            secondary = getColor(android.R.color.system_accent3_500)
+        }
+        ambient.setPalette(accent, secondary)
+    }
+
+    private fun styleSurfaces() {
+        glanceCard.background = rounded(
+            fill = Color.argb(96, 8, 28, 31),
+            stroke = withAlpha(accent, 110),
+            radius = 30
+        )
+        searchPill.background = rounded(
+            fill = Color.argb(150, 23, 52, 55),
+            stroke = withAlpha(accent, 130),
+            radius = 22
+        )
+        dragHandle.background = rounded(
+            fill = Color.argb(120, 12, 36, 39),
+            stroke = withAlpha(secondary, 100),
+            radius = 999
+        )
+        dock.background = rounded(
+            fill = Color.argb(120, 6, 18, 20),
+            stroke = withAlpha(accent, 70),
+            radius = 26
+        )
+    }
+
+    private fun loadAppLists() {
         allApps = loadApps()
-        adapter = AppAdapter(this, allApps) { launch(it) }
-        grid.adapter = adapter
+        homeAdapter = AppAdapter(this, allApps.take(8)) { launch(it) }
+        drawerAdapter = AppAdapter(this, allApps) { launch(it) }
+        homeGrid.adapter = homeAdapter
+        drawerGrid.adapter = drawerAdapter
+    }
 
-        search.addTextChangedListener(object : TextWatcher {
+    private fun setupInteractions() {
+        searchPill.setOnClickListener { openDrawer() }
+
+        closeDrawerBtn.setOnClickListener { closeDrawer() }
+
+        drawerSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
                 val query = s?.toString()?.trim()?.lowercase(Locale.getDefault()).orEmpty()
-                adapter.submit(
-                    if (query.isEmpty()) allApps
-                    else allApps.filter {
-                        it.label.lowercase(Locale.getDefault()).contains(query) ||
-                            it.packageName.contains(query, ignoreCase = true)
-                    }
-                )
+                drawerAdapter.submit(filterApps(query))
             }
         })
 
-        findViewById<Button>(R.id.settingsBtn).setOnClickListener { showHomeHint() }
-        buildDock()
+        var handleStartY = 0f
+        dragHandle.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> handleStartY = event.y
+                MotionEvent.ACTION_UP -> {
+                    if (event.y - handleStartY < -dp(28)) {
+                        dragHandle.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        openDrawer()
+                    }
+                }
+            }
+            false
+        }
+
+        var drawerStartY = 0f
+        drawerInner.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> drawerStartY = event.y
+                MotionEvent.ACTION_UP -> {
+                    if (event.y - drawerStartY > dp(90) && !drawerGrid.canScrollVertically(-1)) {
+                        closeDrawer()
+                    }
+                }
+            }
+            false
+        }
     }
 
     override fun onResume() {
         super.onResume()
         handler.removeCallbacks(ticker)
         ticker.run()
+        if (!introDone) {
+            introDone = true
+            playIntro()
+        }
     }
 
     override fun onPause() {
@@ -96,16 +239,149 @@ class MainActivity : Activity() {
 
     @Deprecated("Home launcher menangani tombol back sendiri")
     override fun onBackPressed() {
-        if (search.text.isNotEmpty()) {
-            search.text.clear()
-            return
+        if (drawerOpen) closeDrawer()
+    }
+
+    private fun playIntro() {
+        if (!animationsEnabled()) return
+        listOf(glanceCard, searchPill, homeGrid, dragHandle, dock).forEachIndexed { index, view ->
+            view.alpha = 0f
+            view.translationY = dp(26).toFloat()
+            view.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setStartDelay(index * 70L)
+                .setDuration(420)
+                .setInterpolator(DecelerateInterpolator(1.8f))
+                .start()
         }
     }
 
-    private fun updateTime() {
+    private fun openDrawer() {
+        if (drawerOpen) return
+        drawerOpen = true
+        drawerAdapter.submit(allApps)
+        drawerSearch.text.clear()
+
+        if (!animationsEnabled()) {
+            homeLayer.visibility = View.GONE
+            drawerLayer.visibility = View.VISIBLE
+            drawerSearch.requestFocus()
+            return
+        }
+
+        homeLayer.animate()
+            .alpha(0f)
+            .translationY(-dp(44).toFloat())
+            .scaleX(0.96f)
+            .scaleY(0.96f)
+            .setDuration(220)
+            .setInterpolator(DecelerateInterpolator(2f))
+            .withEndAction {
+                homeLayer.visibility = View.GONE
+                drawerLayer.visibility = View.VISIBLE
+                drawerLayer.alpha = 0f
+                drawerLayer.translationY = dp(72).toFloat()
+                drawerLayer.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(340)
+                    .setInterpolator(OvershootInterpolator(0.9f))
+                    .withEndAction {
+                        drawerSearch.requestFocus()
+                        drawerGrid.post { stagger(drawerGrid) }
+                    }
+                    .start()
+            }
+            .start()
+    }
+
+    private fun closeDrawer() {
+        if (!drawerOpen) return
+        drawerOpen = false
+        hideKeyboard()
+
+        if (!animationsEnabled()) {
+            drawerLayer.visibility = View.GONE
+            restoreHome()
+            return
+        }
+
+        drawerLayer.animate()
+            .alpha(0f)
+            .translationY(dp(64).toFloat())
+            .setDuration(200)
+            .setInterpolator(AccelerateInterpolator())
+            .withEndAction {
+                drawerLayer.visibility = View.GONE
+                restoreHome()
+            }
+            .start()
+    }
+
+    private fun restoreHome() {
+        homeLayer.visibility = View.VISIBLE
+        if (!animationsEnabled()) {
+            homeLayer.alpha = 1f
+            homeLayer.translationY = 0f
+            homeLayer.scaleX = 1f
+            homeLayer.scaleY = 1f
+            return
+        }
+        homeLayer.alpha = 0f
+        homeLayer.translationY = dp(28).toFloat()
+        homeLayer.scaleX = 0.97f
+        homeLayer.scaleY = 0.97f
+        homeLayer.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(320)
+            .setInterpolator(OvershootInterpolator(0.8f))
+            .start()
+    }
+
+    private fun stagger(grid: GridView) {
+        if (!animationsEnabled()) return
+        for (index in 0 until grid.childCount) {
+            val view = grid.getChildAt(index) ?: continue
+            view.alpha = 0f
+            view.translationY = dp(22).toFloat()
+            view.scaleX = 0.92f
+            view.scaleY = 0.92f
+            view.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setStartDelay((index * 14).toLong())
+                .setDuration(280)
+                .setInterpolator(OvershootInterpolator(0.7f))
+                .start()
+        }
+    }
+
+    private fun updateGlance() {
         val now = Date()
         clock.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
         dateText.text = SimpleDateFormat("EEEE, d MMMM", Locale("id", "ID")).format(now)
+
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+        batteryChip.text = if (level >= 0 && scale > 0) {
+            "▰ ${level * 100 / scale}%"
+        } else {
+            "▰ Baterai"
+        }
+
+        val alarm = (getSystemService(ALARM_SERVICE) as AlarmManager).nextAlarmClock
+        alarmChip.text = if (alarm != null) {
+            "◷ Alarm " + SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(alarm.triggerTime))
+        } else {
+            "◷ Tanpa alarm"
+        }
     }
 
     private fun loadApps(): List<AppInfo> {
@@ -117,11 +393,18 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             pm.queryIntentActivities(intent, 0)
         }
-
         return resolved
             .map { info -> AppInfo(info.loadLabel(pm).toString(), info.activityInfo.packageName, info.loadIcon(pm)) }
             .distinctBy { it.packageName }
             .sortedBy { it.label.lowercase(Locale.getDefault()) }
+    }
+
+    private fun filterApps(query: String): List<AppInfo> {
+        if (query.isEmpty()) return allApps
+        return allApps.filter {
+            it.label.lowercase(Locale.getDefault()).contains(query) ||
+                it.packageName.contains(query, ignoreCase = true)
+        }
     }
 
     private fun launch(app: AppInfo) {
@@ -135,50 +418,71 @@ class MainActivity : Activity() {
     }
 
     private fun buildDock() {
+        dock.removeAllViews()
         val favourites = listOf(
             "com.google.android.dialer",
             "com.google.android.apps.messaging",
             "com.android.camera2",
             "com.android.chrome"
         )
-
-        dock.removeAllViews()
         favourites.forEach { packageName ->
             val app = allApps.firstOrNull { it.packageName == packageName } ?: return@forEach
-            val icon = ImageView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
+            dock.addView(ImageView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
                 setImageDrawable(app.icon)
                 contentDescription = app.label
-                background = roundedBackground()
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                setOnClickListener { launch(app) }
-            }
-            dock.addView(icon)
-        }
-
-        if (dock.childCount == 0) {
-            dock.addView(TextView(this).apply {
-                text = "Belum ada pintasan yang cocok."
-                setTextColor(Color.parseColor("#A9B9B4"))
-                textSize = 12f
+                background = rounded(
+                    fill = Color.argb(140, 23, 52, 55),
+                    stroke = withAlpha(accent, 90),
+                    radius = 18
+                )
+                setPadding(dp(9), dp(9), dp(9), dp(9))
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    launch(app)
+                }
+                attachPress(this)
             })
         }
     }
 
-    private fun roundedBackground(): GradientDrawable = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(16).toFloat()
-        setColor(Color.parseColor("#173437"))
-        setStroke(dp(1), Color.parseColor("#22F4EFE3"))
+    fun attachPress(view: View) {
+        view.setOnTouchListener { target, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> if (animationsEnabled()) {
+                    target.animate().scaleX(0.88f).scaleY(0.88f).setDuration(90).start()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (animationsEnabled()) {
+                    target.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(260)
+                        .setInterpolator(OvershootInterpolator(1.1f))
+                        .start()
+                }
+            }
+            false
+        }
     }
 
-    private fun showHomeHint() {
-        AlertDialog.Builder(this)
-            .setTitle("Jadikan Saku sebagai beranda")
-            .setMessage("Buka Settings → Home app (atau App default), lalu pilih Saku. Tekan Home untuk kembali ke launcher ini.")
-            .setPositiveButton("Mengerti", null)
-            .show()
+    private fun hideKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(drawerSearch.windowToken, 0)
     }
+
+    private fun animationsEnabled(): Boolean =
+        Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+
+    private fun rounded(fill: Int, stroke: Int, radius: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radius).toFloat()
+            setColor(fill)
+            setStroke(dp(1), stroke)
+        }
+
+    private fun withAlpha(color: Int, alpha: Int): Int =
+        Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
@@ -209,7 +513,11 @@ class MainActivity : Activity() {
             val app = items[position]
             holder.icon.setImageDrawable(app.icon)
             holder.label.text = app.label
-            view.setOnClickListener { onClick(app) }
+            view.setOnClickListener {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                onClick(app)
+            }
+            (view.context as? MainActivity)?.attachPress(view)
             return view
         }
 
