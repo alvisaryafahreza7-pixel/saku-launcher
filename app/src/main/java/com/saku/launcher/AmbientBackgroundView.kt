@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.AttributeSet
 import android.view.View
@@ -22,25 +23,32 @@ class AmbientBackgroundView @JvmOverloads constructor(
     private var secondary = Color.parseColor("#66D9E8")
     private var phase = 0.5f
     private var animator: ValueAnimator? = null
+    private var animatorStarted = false
+    private var motionAllowed = true
     private var lastFrame = 0L
 
     init {
-        val scale = Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
-        if (scale > 0f) {
+        val scale = Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f
+        )
+        motionAllowed = scale > 0f
+        if (motionAllowed) {
             animator = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = (14_000 / scale.coerceAtLeast(0.25f)).toLong()
                 repeatCount = ValueAnimator.INFINITE
                 repeatMode = ValueAnimator.REVERSE
                 interpolator = LinearInterpolator()
                 addUpdateListener { value ->
-                    val now = android.os.SystemClock.uptimeMillis()
                     phase = value.animatedValue as Float
-                    if (now - lastFrame >= 33) {
+                    val now = SystemClock.uptimeMillis()
+                    // 20 fps cukup untuk gradient yang bergerak lambat; lebih hemat baterai.
+                    if (now - lastFrame >= 50) {
                         lastFrame = now
                         invalidate()
                     }
                 }
-                start()
             }
         }
     }
@@ -49,6 +57,25 @@ class AmbientBackgroundView @JvmOverloads constructor(
         accent = newAccent
         secondary = newSecondary
         invalidate()
+    }
+
+    fun onHostResume(powerSave: Boolean) {
+        val shouldAnimate = motionAllowed && !powerSave && animator != null
+        if (!shouldAnimate) {
+            if (animatorStarted) animator?.pause()
+            invalidate()
+            return
+        }
+        if (animatorStarted) {
+            animator?.resume()
+        } else {
+            animator?.start()
+            animatorStarted = true
+        }
+    }
+
+    fun onHostPause() {
+        if (animatorStarted) animator?.pause()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -81,6 +108,7 @@ class AmbientBackgroundView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         animator?.cancel()
+        animatorStarted = false
         super.onDetachedFromWindow()
     }
 }
