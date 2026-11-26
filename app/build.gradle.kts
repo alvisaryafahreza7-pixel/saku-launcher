@@ -11,14 +11,26 @@ android {
         applicationId = "com.saku.launcher"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "2.1"
+        versionCode = 4
+        versionName = "2.2"
+    }
+
+    // Kunci debug tetap supaya update tidak kena "package conflicts / signature mismatch"
+    // antar GitHub Actions run. Ini bukan kunci Play Store.
+    signingConfigs {
+        create("stableDebug") {
+            storeFile = file("saku-debug.p12")
+            storeType = "PKCS12"
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("stableDebug")
         }
     }
 
