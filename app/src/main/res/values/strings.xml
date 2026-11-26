@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Saku</string>
+    <string name="search_hint">Cari aplikasi</string>
+    <string name="settings_label">Atur</string>
+    <string name="quick_label">Pintasan cepat</string>
+</resources>
