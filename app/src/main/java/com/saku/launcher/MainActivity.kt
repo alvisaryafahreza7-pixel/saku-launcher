@@ -2,6 +2,7 @@ package com.saku.launcher
 
 import android.app.Activity
 import android.app.AlarmManager
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -19,6 +20,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -28,6 +30,7 @@ import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.view.inputmethod.InputMethodManager
+import android.widget.AbsListView
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -40,6 +43,7 @@ import android.widget.Toast
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 class MainActivity : Activity() {
 
@@ -53,6 +57,7 @@ class MainActivity : Activity() {
     private lateinit var dateText: TextView
     private lateinit var batteryChip: TextView
     private lateinit var alarmChip: TextView
+    private lateinit var settingsBtn: TextView
     private lateinit var searchPill: TextView
     private lateinit var homeGrid: GridView
     private lateinit var dragHandle: TextView
@@ -65,6 +70,7 @@ class MainActivity : Activity() {
 
     private lateinit var homeAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
+    private lateinit var gestureDetector: GestureDetector
 
     private var allApps: List<AppInfo> = emptyList()
     private var accent = Color.parseColor("#FFC857")
@@ -72,11 +78,18 @@ class MainActivity : Activity() {
     private var drawerOpen = false
     private var introDone = false
     private var powerReceiverRegistered = false
+    private var notifReceiverRegistered = false
     private val handler = Handler(Looper.getMainLooper())
 
     private val powerSaveReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             ambient.onHostResume(isPowerSaveMode())
+        }
+    }
+
+    private val notifReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            refreshBadges()
         }
     }
 
@@ -89,6 +102,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Prefs.init(this)
         setContentView(R.layout.activity_main)
 
         bindViews()
@@ -96,8 +110,10 @@ class MainActivity : Activity() {
         applyWindowInsets()
         resolvePalette()
         styleSurfaces()
+        applyLayoutPrefs()
         loadAppLists()
         setupInteractions()
+        setup3D()
         buildDock()
     }
 
@@ -110,6 +126,7 @@ class MainActivity : Activity() {
         dateText = findViewById(R.id.dateText)
         batteryChip = findViewById(R.id.batteryChip)
         alarmChip = findViewById(R.id.alarmChip)
+        settingsBtn = findViewById(R.id.settingsBtn)
         searchPill = findViewById(R.id.searchPill)
         homeGrid = findViewById(R.id.homeGrid)
         dragHandle = findViewById(R.id.dragHandle)
@@ -181,18 +198,46 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun applyLayoutPrefs() {
+        homeGrid.numColumns = Prefs.columns
+        drawerGrid.numColumns = if (Prefs.drawerList) 1 else Prefs.columns
+    }
+
     private fun loadAppLists() {
         allApps = loadApps()
-        homeAdapter = AppAdapter(this, allApps.take(8)) { launch(it) }
-        drawerAdapter = AppAdapter(this, allApps) { launch(it) }
+        homeAdapter = AppAdapter(this, allApps.take(8), R.layout.item_tile) { launch(it) }
+        drawerAdapter = AppAdapter(this, allApps, R.layout.item_app) { launch(it) }
         homeGrid.adapter = homeAdapter
         drawerGrid.adapter = drawerAdapter
     }
 
-    private fun setupInteractions() {
-        searchPill.setOnClickListener { openDrawer() }
+    private fun reloadApps() {
+        allApps = loadApps()
+        if (::homeAdapter.isInitialized) homeAdapter.submit(allApps.take(8))
+        if (::drawerAdapter.isInitialized) {
+            drawerAdapter.submit(filterApps(drawerSearch.text?.toString().orEmpty().trim().lowercase(Locale.getDefault())))
+        }
+    }
 
+    private fun setupInteractions() {
+        settingsBtn.setOnClickListener { showSettings() }
+        searchPill.setOnClickListener { openDrawer() }
         closeDrawerBtn.setOnClickListener { closeDrawer() }
+
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(event: MotionEvent?): Boolean {
+                if (!Prefs.lockGesture) return false
+                if (!LauncherExtras.lockNow(this@MainActivity)) {
+                    toast("Aktifkan device admin dulu")
+                    LauncherExtras.requestDeviceAdmin(this@MainActivity)
+                }
+                return true
+            }
+        })
+        homeLayer.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            false
+        }
 
         drawerSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -231,6 +276,176 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun setup3D() {
+        attach3D(homeGrid)
+        attach3D(drawerGrid)
+    }
+
+    private fun attach3D(grid: GridView) {
+        grid.setOnScrollListener(object : AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {
+                if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE) {
+                    for (index in 0 until grid.childCount) {
+                        reset3D(grid.getChildAt(index) ?: continue)
+                    }
+                }
+            }
+
+            override fun onScroll(
+                view: AbsListView?,
+                firstVisibleItem: Int,
+                visibleItemTop: Int,
+                oldFirstVisibleItem: Int,
+                oldVisibleItemTop: Int
+            ) {
+                if (!canUse3D()) return
+                val middle = grid.height / 2f
+                if (middle <= 0f) return
+                for (index in 0 until grid.childCount) {
+                    val child = grid.getChildAt(index) ?: continue
+                    val childMiddle = (child.top + child.bottom) / 2f
+                    val distance = ((childMiddle - middle) / middle).coerceIn(-1f, 1f)
+                    child.cameraDistance = dp(1200).toFloat()
+                    child.rotationY = distance * -24f
+                    child.translationZ = dp(26) * (1f - abs(distance))
+                    child.alpha = 0.72f + 0.28f * (1f - abs(distance))
+                }
+            }
+        })
+    }
+
+    private fun canUse3D(): Boolean =
+        Prefs.effect3d && animationsEnabled() && !isPowerSaveMode()
+
+    private fun reset3D(view: View) {
+        view.animate()
+            .rotationY(0f)
+            .translationZ(0f)
+            .alpha(1f)
+            .setDuration(180)
+            .start()
+    }
+
+    private fun showSettings() {
+        val items = arrayOf(
+            if (Prefs.effect3d) "Efek 3D: AKTIF" else "Efek 3D: mati",
+            if (Prefs.notifTiles) "Notifikasi di tile: AKTIF" else "Notifikasi di tile: mati",
+            if (Prefs.usageSort) "Urut berdasarkan pemakaian: AKTIF" else "Urut berdasarkan pemakaian: mati",
+            if (Prefs.lockGesture) "Double-tap kunci: AKTIF" else "Double-tap kunci: mati",
+            if (Prefs.drawerList) "Drawer: mode list" else "Drawer: mode grid",
+            "Sembunyikan aplikasi",
+            "Jumlah kolom: ${Prefs.columns}",
+            "Backup / restore",
+            "Tentang Saku"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Saku Fusion")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        Prefs.effect3d = !Prefs.effect3d
+                        toast(if (Prefs.effect3d) "Efek 3D aktif" else "Efek 3D dimatikan")
+                    }
+                    1 -> {
+                        Prefs.notifTiles = !Prefs.notifTiles
+                        if (Prefs.notifTiles && !LauncherExtras.isNotificationAccess(this)) {
+                            toast("Aktifkan akses notifikasi untuk Saku")
+                            LauncherExtras.openNotificationSettings(this)
+                        }
+                        refreshBadges()
+                    }
+                    2 -> {
+                        Prefs.usageSort = !Prefs.usageSort
+                        if (Prefs.usageSort && !LauncherExtras.isUsageAccess(this)) {
+                            toast("Aktifkan akses penggunaan untuk Saku")
+                            LauncherExtras.openUsageSettings(this)
+                        }
+                        reloadApps()
+                    }
+                    3 -> {
+                        Prefs.lockGesture = !Prefs.lockGesture
+                        if (Prefs.lockGesture && !LauncherExtras.isDeviceAdmin(this)) {
+                            LauncherExtras.requestDeviceAdmin(this)
+                        }
+                        toast(if (Prefs.lockGesture) "Double-tap kunci aktif" else "Double-tap kunci dimatikan")
+                    }
+                    4 -> {
+                        Prefs.drawerList = !Prefs.drawerList
+                        applyLayoutPrefs()
+                        toast(if (Prefs.drawerList) "Drawer mode list" else "Drawer mode grid")
+                    }
+                    5 -> showHiddenPicker()
+                    6 -> showColumnPicker()
+                    7 -> showBackupMenu()
+                    8 -> toast("Saku Fusion v3.0 — native Kotlin, ringan & hemat daya")
+                }
+            }
+            .setPositiveButton("Tutup", null)
+            .show()
+    }
+
+    private fun showHiddenPicker() {
+        val labels = allApps.map { it.label }.toTypedArray()
+        val checked = BooleanArray(allApps.size) { index -> Prefs.hidden.contains(allApps[index].packageName) }
+        AlertDialog.Builder(this)
+            .setTitle("Sembunyikan aplikasi")
+            .setMultiChoiceItems(labels, checked) { _, _, _ -> }
+            .setPositiveButton("Simpan") { _, _ ->
+                val hidden = HashSet<String>()
+                for (index in labels.indices) {
+                    if (checked[index]) hidden.add(allApps[index].packageName)
+                }
+                Prefs.hidden = hidden
+                reloadApps()
+                toast("${hidden.size} aplikasi disembunyikan")
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun showColumnPicker() {
+        AlertDialog.Builder(this)
+            .setTitle("Jumlah kolom")
+            .setSingleChoiceItems(arrayOf("3 kolom", "4 kolom", "5 kolom"), Prefs.columns - 3) { dialog, which ->
+                Prefs.columns = which + 3
+                applyLayoutPrefs()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun showBackupMenu() {
+        AlertDialog.Builder(this)
+            .setTitle("Backup / restore")
+            .setItems(arrayOf("Export ke JSON", "Import dari JSON")) { _, which ->
+                when (which) {
+                    0 -> {
+                        val file = LauncherExtras.exportBackup(this)
+                        toast("Backup: ${file.name}")
+                    }
+                    1 -> {
+                        val ok = LauncherExtras.importBackup(this)
+                        if (ok) {
+                            applyLayoutPrefs()
+                            reloadApps()
+                            toast("Backup dipulihkan")
+                        } else {
+                            toast("File backup tidak ditemukan")
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun refreshBadges() {
+        if (!::homeAdapter.isInitialized || !::drawerAdapter.isInitialized) return
+        homeAdapter.notifyDataSetChanged()
+        drawerAdapter.notifyDataSetChanged()
+    }
+
     override fun onResume() {
         super.onResume()
         handler.removeCallbacks(ticker)
@@ -239,6 +454,10 @@ class MainActivity : Activity() {
         if (!powerReceiverRegistered) {
             registerReceiver(powerSaveReceiver, IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED))
             powerReceiverRegistered = true
+        }
+        if (!notifReceiverRegistered) {
+            registerReceiver(notifReceiver, IntentFilter(SakuNotificationListener.ACTION_NOTIF))
+            notifReceiverRegistered = true
         }
         if (!introDone) {
             introDone = true
@@ -253,6 +472,10 @@ class MainActivity : Activity() {
         if (powerReceiverRegistered) {
             unregisterReceiver(powerSaveReceiver)
             powerReceiverRegistered = false
+        }
+        if (notifReceiverRegistered) {
+            unregisterReceiver(notifReceiver)
+            notifReceiverRegistered = false
         }
     }
 
@@ -414,10 +637,18 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             pm.queryIntentActivities(intent, 0)
         }
-        return resolved
+        val hidden = Prefs.hidden
+        val base = resolved
             .map { info -> AppInfo(info.loadLabel(pm).toString(), info.activityInfo.packageName, info.loadIcon(pm)) }
             .distinctBy { it.packageName }
-            .sortedBy { it.label.lowercase(Locale.getDefault()) }
+            .filterNot { hidden.contains(it.packageName) }
+
+        return if (Prefs.usageSort) {
+            val rank = LauncherExtras.usageRank(this)
+            base.sortedByDescending { rank[it.packageName] ?: 0L }
+        } else {
+            base.sortedBy { it.label.lowercase(Locale.getDefault()) }
+        }
     }
 
     private fun filterApps(query: String): List<AppInfo> {
@@ -431,7 +662,7 @@ class MainActivity : Activity() {
     private fun launch(app: AppInfo) {
         val intent = packageManager.getLaunchIntentForPackage(app.packageName)
         if (intent == null) {
-            Toast.makeText(this, "${app.label} tidak bisa dibuka", Toast.LENGTH_SHORT).show()
+            toast("${app.label} tidak bisa dibuka")
             return
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -491,6 +722,10 @@ class MainActivity : Activity() {
         imm.hideSoftInputFromWindow(drawerSearch.windowToken, 0)
     }
 
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
     private fun animationsEnabled(): Boolean =
         Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
 
@@ -513,6 +748,7 @@ class MainActivity : Activity() {
     private class AppAdapter(
         context: Context,
         source: List<AppInfo>,
+        private val layoutRes: Int,
         private val onClick: (AppInfo) -> Unit
     ) : BaseAdapter() {
 
@@ -530,13 +766,26 @@ class MainActivity : Activity() {
         override fun getItemId(position: Int): Long = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val view = convertView ?: inflater.inflate(R.layout.item_app, parent, false).also {
-                it.tag = Holder(it.findViewById(R.id.appIcon), it.findViewById(R.id.appLabel))
+            val view = convertView ?: inflater.inflate(layoutRes, parent, false).also {
+                it.tag = Holder(
+                    it.findViewById(R.id.appIcon),
+                    it.findViewById(R.id.appLabel),
+                    it.findViewById(R.id.notifBadge)
+                )
             }
             val holder = view.tag as Holder
             val app = items[position]
             holder.icon.setImageDrawable(app.icon)
             holder.label.text = app.label
+
+            val count = Prefs.notifCounts()[app.packageName] ?: 0
+            if (Prefs.notifTiles && count > 0) {
+                holder.badge?.text = count.toString()
+                holder.badge?.visibility = View.VISIBLE
+            } else {
+                holder.badge?.visibility = View.GONE
+            }
+
             view.setOnClickListener {
                 view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 onClick(app)
@@ -545,6 +794,6 @@ class MainActivity : Activity() {
             return view
         }
 
-        private data class Holder(val icon: ImageView, val label: TextView)
+        private data class Holder(val icon: ImageView, val label: TextView, val badge: TextView?)
     }
 }

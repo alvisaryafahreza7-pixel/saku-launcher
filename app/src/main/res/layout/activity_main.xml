@@ -71,6 +71,20 @@
                     android:paddingBottom="6dp"
                     android:textColor="@color/text"
                     android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/settingsBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/search_bg"
+                    android:paddingStart="12dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="6dp"
+                    android:text="@string/settings_label"
+                    android:textColor="@color/text"
+                    android:textSize="11sp" />
             </LinearLayout>
         </LinearLayout>
 
