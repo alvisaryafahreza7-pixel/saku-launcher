@@ -225,7 +225,7 @@ class MainActivity : Activity() {
         closeDrawerBtn.setOnClickListener { closeDrawer() }
 
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDoubleTap(event: MotionEvent?): Boolean {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
                 if (!Prefs.lockGesture) return false
                 if (!LauncherExtras.lockNow(this@MainActivity)) {
                     toast("Aktifkan device admin dulu")
@@ -294,9 +294,8 @@ class MainActivity : Activity() {
             override fun onScroll(
                 view: AbsListView?,
                 firstVisibleItem: Int,
-                visibleItemTop: Int,
-                oldFirstVisibleItem: Int,
-                oldVisibleItemTop: Int
+                visibleItemCount: Int,
+                totalItemCount: Int
             ) {
                 if (!canUse3D()) return
                 val middle = grid.height / 2f
