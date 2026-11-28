@@ -1,0 +1,48 @@
+name: Signature experiment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: SDK tools
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "build-tools;35.0.0"
+      - name: Experiment
+        run: |
+          set +e
+          A="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          K="app/saku-debug.p12"
+          P="pass:android"
+          ALC="androiddebugkey"
+          echo "=== rotate SAME key ==="
+          $A rotate --out /tmp/lin-same --old-signer --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --new-signer --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P"
+          echo "rotate-same exit=$? exists=$(test -f /tmp/lin-same && echo yes || echo no)"
+          echo "=== rotate TWO keys ==="
+          keytool -genkeypair -keystore /tmp/new.p12 -storetype PKCS12 -storepass android -keypass android -alias newkey -dname "CN=Saku New" -validity 10000 -keyalg RSA -keysize 2048 >/dev/null 2>&1
+          $A rotate --out /tmp/lin-two --old-signer --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --new-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P"
+          echo "rotate-two exit=$? exists=$(test -f /tmp/lin-two && echo yes || echo no)"
+          echo "=== download base APK ==="
+          gh release download v3.0.1 -R "$GITHUB_REPOSITORY" -p '*.apk' -D /tmp/base
+          ls -l /tmp/base
+          BASE=$(ls /tmp/base/*.apk | head -1)
+          echo "=== sign SAME lineage ==="
+          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --lineage /tmp/lin-same --min-sdk-version 24 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true --out /tmp/same.apk "$BASE" 2>&1
+          echo "sign-same exit=$?"
+          $A verify --verbose --print-certs /tmp/same.apk 2>&1
+          echo "idsig: $(ls /tmp/*.idsig 2>/dev/null)"
+          echo "=== sign TWO lineage ==="
+          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --next-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P" --lineage /tmp/lin-two --min-sdk-version 24 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true --out /tmp/two.apk "$BASE" 2>&1
+          echo "sign-two exit=$?"
+          $A verify --verbose --print-certs /tmp/two.apk 2>&1
