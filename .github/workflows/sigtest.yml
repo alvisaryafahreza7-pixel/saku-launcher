@@ -21,7 +21,7 @@ jobs:
           sdkmanager "build-tools;35.0.0"
       - name: Experiment
         run: |
-          set +e
+          set -e
           A="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           K="app/saku-debug.p12"
           P="pass:android"
@@ -30,28 +30,15 @@ jobs:
           BASE=$(ls /tmp/base/*.apk | head -1)
           keytool -genkeypair -keystore /tmp/new.p12 -storetype PKCS12 -storepass android -keypass android -alias newkey -dname "CN=Saku New" -validity 10000 -keyalg RSA -keysize 2048 >/dev/null 2>&1
           $A rotate --out /tmp/lin --old-signer --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --new-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P"
-
-          echo "=== A: single signer, no lineage, all flags, min 24 ==="
-          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --min-sdk-version 24 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true --out /tmp/a.apk "$BASE"
-          $A verify --verbose /tmp/a.apk | grep 'Verified using'
-          echo "idsig files: $(ls -l /tmp/*.idsig 2>/dev/null | awk '{print $9, $5}')"
-
-          echo "=== B: two signers + lineage, min 21, default v1 ==="
-          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --next-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P" --lineage /tmp/lin --min-sdk-version 21 --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true --out /tmp/b.apk "$BASE" 2>&1
-          $A verify --verbose /tmp/b.apk | grep 'Verified using'
-          echo "idsig files: $(ls -l /tmp/*.idsig 2>/dev/null | awk '{print $9, $5}')"
-
-          echo "=== C: two signers + lineage, min 24, then v4 only with OLD key ==="
-          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --next-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P" --lineage /tmp/lin --min-sdk-version 24 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out /tmp/c.apk "$BASE" 2>&1
-          $A sign --v4-signing-enabled only --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --out /tmp/c2.apk /tmp/c.apk 2>&1 || true
-          cp /tmp/c.apk /tmp/c3.apk
-          $A sign --v4-signing-enabled only --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" /tmp/c3.apk 2>&1 || true
-          echo "c idsig files: $(ls -l /tmp/c*.idsig 2>/dev/null | awk '{print $9, $5}')"
-          $A verify --verbose /tmp/c3.apk | grep 'Verified using'
-
-          echo "=== D: two signers + lineage, min 24, then v4 only with NEW key ==="
-          rm -f /tmp/d.apk*
-          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" --next-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P" --lineage /tmp/lin --min-sdk-version 24 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out /tmp/d.apk "$BASE" 2>&1
-          $A sign --v4-signing-enabled only --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P" /tmp/d.apk 2>&1 || true
-          echo "d idsig files: $(ls -l /tmp/d*.idsig 2>/dev/null | awk '{print $9, $5}')"
-          $A verify --verbose /tmp/d.apk | grep 'Verified using'
+          $A sign --ks "$K" --ks-key-alias "$ALC" --ks-pass "$P" \
+            --next-signer --ks /tmp/new.p12 --ks-key-alias newkey --ks-pass "$P" \
+            --lineage /tmp/lin --min-sdk-version 24 \
+            --v1-signing-enabled true --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled true \
+            --out /tmp/final.apk "$BASE"
+          echo "=== files ==="
+          ls -l /tmp/final.apk /tmp/final.apk.idsig
+          echo "=== META-INF ==="
+          unzip -l /tmp/final.apk | grep 'META-INF' || true
+          echo "=== verify with min 21 + v4 file ==="
+          $A verify --verbose --min-sdk-version 21 --v4-signature-file /tmp/final.apk.idsig /tmp/final.apk
