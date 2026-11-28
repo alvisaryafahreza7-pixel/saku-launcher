@@ -35,9 +35,41 @@ jobs:
       - name: Build signed release APK
         run: gradle assembleRelease --no-daemon
 
+      # v3.1 hanya diproduksi apksigner kalau ada rotasi kunci + lineage.
+      # Tanda tangan v2/v3 tetap memakai kunci lama untuk Android 7-12,
+      # sehingga update dari rilis sebelumnya tetap diterima.
+      - name: Re-sign with v1 + v2 + v3 + v3.1 + v4
+        run: |
+          export PATH="$ANDROID_HOME/build-tools/35.0.0:$PATH"
+          OUT="app/build/outputs/apk/release"
+          apksigner sign \
+            --ks app/saku-debug.p12 --ks-key-alias androiddebugkey --ks-pass pass:android \
+            --next-signer --ks app/saku-rotated.p12 --ks-key-alias saku --ks-pass pass:android \
+            --lineage app/saku-lineage.bin \
+            --min-sdk-version 24 \
+            --v1-signing-enabled true --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled true \
+            --out "$OUT/final.apk" "$OUT/app-release.apk"
+          mv "$OUT/final.apk" "$OUT/app-release.apk"
+          mv "$OUT/final.apk.idsig" "$OUT/app-release.apk.idsig"
+
+          apksigner verify --verbose --min-sdk-version 21 \
+            --v4-signature-file "$OUT/app-release.apk.idsig" \
+            "$OUT/app-release.apk" | tee "$OUT/verify.txt"
+
+          for scheme in v1 v2 v3 v3.1 v4; do
+            grep -F "Verified using $scheme scheme" "$OUT/verify.txt" | grep -q ': true' || {
+              echo "Signature scheme $scheme is missing"
+              exit 1
+            }
+          done
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: saku-launcher-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/release/app-release.apk.idsig
+            app/build/outputs/apk/release/verify.txt
           if-no-files-found: error

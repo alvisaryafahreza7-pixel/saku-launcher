@@ -11,8 +11,8 @@ android {
         applicationId = "com.saku.launcher"
         minSdk = 24
         targetSdk = 35
-        versionCode = 6
-        versionName = "3.0.1"
+        versionCode = 7
+        versionName = "3.0.2"
     }
 
     // Kunci debug tetap supaya update tidak kena "package conflicts / signature mismatch"
@@ -24,6 +24,13 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+
+            // Semua skema tanda tangan APK aktif. v3.1 ditambahkan lagi di CI
+            // lewat apksigner + lineage (v3.1 hanya ada kalau kunci dirotasi).
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
         }
     }
 
